@@ -7,42 +7,100 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import onnxruntime as ort
 import pandas as pd
 import streamlit as st
-from ultralytics import YOLO
 
 
-MODEL_FILE = "yolov8n.pt"
+MODEL_FILE = "yolov8n.onnx"
 DEFAULT_CLASSES = ["person", "bus", "car", "truck", "bicycle", "motorbike"]
+CLASS_NAMES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
+    "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
+    "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra",
+    "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove",
+    "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork",
+    "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli",
+    "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant",
+    "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard",
+    "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book",
+    "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
+]
+GRID_SIZES = (80, 40, 20)
+ANCHORS = ((10, 13), (16, 30), (19, 70))
+CLASS_COUNT = len(CLASS_NAMES)
 
 
 @lru_cache(maxsize=1)
 def load_model():
     model_path = Path(MODEL_FILE)
     if not model_path.is_file():
-        raise FileNotFoundError(f"YOLO model not found: {model_path}. Download yolov8n.pt.")
-    return YOLO(str(model_path))
+        raise FileNotFoundError(f"YOLO model not found: {model_path}. Commit yolov8n.onnx through Git LFS.")
+    return ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+
+
+def sigmoid(values: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-values))
+
+
+def box_iou(first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> float:
+    first_left, first_top, first_right, first_bottom = first
+    second_left, second_top, second_right, second_bottom = second
+    intersection_left = max(first_left, second_left)
+    intersection_top = max(first_top, second_top)
+    intersection_right = min(first_right, second_right)
+    intersection_bottom = min(first_bottom, second_bottom)
+    intersection = max(0, intersection_right - intersection_left) * max(0, intersection_bottom - intersection_top)
+    first_area = max(0, first_right - first_left) * max(0, first_bottom - first_top)
+    second_area = max(0, second_right - second_left) * max(0, second_bottom - second_top)
+    return intersection / (first_area + second_area - intersection) if first_area + second_area else 0.0
+
+
+def non_max_suppression(boxes: list[tuple[int, int, int, int, float, str]], threshold: float) -> list[tuple[int, int, int, int, float, str]]:
+    boxes = sorted(boxes, key=lambda box: box[4], reverse=True)
+    kept = []
+    for box in boxes:
+        if all(box_iou(box[:4], candidate[:4]) <= threshold for candidate in kept):
+            kept.append(box)
+    return kept
 
 
 def detect_image(image: np.ndarray, model, confidence_threshold: float):
-    results = model.predict(
-        image,
-        conf=confidence_threshold,
-        imgsz=640,
-        verbose=False,
-        save=False,
-        stream=False,
-    )
+    height, width = image.shape[:2]
+    input_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    input_image = cv2.resize(input_image, (640, 640))
+    input_image = input_image.astype(np.float32) / 255.0
+    input_image = np.transpose(input_image, (2, 0, 1))[None, ...]
+
+    output = model.run(None, {model.get_inputs()[0].name: input_image})[0]
+    predictions = output[0].T
     boxes = []
-    for result in results:
-        for box, confidence, class_name in zip(
-            result.boxes.xyxy.cpu().numpy(),
-            result.boxes.conf.cpu().numpy(),
-            result.boxes.cls.cpu().numpy(),
-        ):
-            left, top, right, bottom = map(int, box)
-            boxes.append((left, top, right, bottom, float(confidence), str(result.names[int(class_name)])))
-    return boxes
+    cell_offset = 0
+    for grid_size, anchor in zip(GRID_SIZES, ANCHORS):
+        cell_count = grid_size * grid_size
+        for cell_index in range(cell_count):
+            raw_box = predictions[cell_offset + cell_index, :4]
+            class_scores = predictions[cell_offset + cell_index, 4:]
+            class_index = int(np.argmax(class_scores))
+            class_probability = float(np.exp(class_scores[class_index]) / np.sum(np.exp(class_scores)))
+            if class_probability < confidence_threshold:
+                continue
+
+            row, column = divmod(cell_index, grid_size)
+            scale_x, scale_y = anchor
+            center_x = (column + 0.5) * width / grid_size
+            center_y = (row + 0.5) * height / grid_size
+            box_width = scale_x * (2.0 * width / 640) * np.exp(float(raw_box[0]))
+            box_height = scale_y * (2.0 * height / 640) * np.exp(float(raw_box[1]))
+            left = max(0, int(center_x - box_width / 2))
+            top = max(0, int(center_y - box_height / 2))
+            right = min(width, int(center_x + box_width / 2))
+            bottom = min(height, int(center_y + box_height / 2))
+            boxes.append((left, top, right, bottom, class_probability, CLASS_NAMES[class_index]))
+        cell_offset += cell_count
+
+    return non_max_suppression(boxes, 0.45)
 
 
 def draw_detections(image: np.ndarray, boxes: list[tuple[int, int, int, int, float, str]]) -> np.ndarray:

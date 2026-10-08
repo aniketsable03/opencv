@@ -10,15 +10,15 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-## Download the model
+## Model
 
-The application uses `yolov8n.pt` in the project directory. It is downloaded automatically when you run:
+The application uses the Git LFS-tracked `yolov8n.onnx` model. It is approximately 12.4 MB and is installed with the repository.
+
+To export the model locally:
 
 ```bash
-python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+python -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='onnx', imgsz=640, opset=17, dynamic=True)"
 ```
-
-The model is approximately 6.3 MB and is excluded from Git by `.gitignore`.
 
 ## Run the application
 
@@ -39,7 +39,8 @@ Open the URL shown by Streamlit, usually `http://localhost:8501`.
 
 ## Model notes
 
-- The application uses Ultralytics YOLOv8.
+- The application uses YOLOv8 through ONNX Runtime.
 - The model runs at 640 × 640 input resolution.
 - The default class filter includes person, bus, car, truck, bicycle, and motorbike.
 - The legacy `yolo_detect.py` remains available as a standalone OpenCV CLI detector.
+- Streamlit Cloud uses Python 3.14, so the dependency file does not install PyTorch.
