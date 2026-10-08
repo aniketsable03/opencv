@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.mp4
+*.weights
+*.cfg
+*.names
+yolov8n.pt
