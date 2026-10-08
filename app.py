@@ -80,24 +80,20 @@ def detect_image(image: np.ndarray, model, confidence_threshold: float):
     for grid_size, anchor in zip(GRID_SIZES, ANCHORS):
         cell_count = grid_size * grid_size
         for cell_index in range(cell_count):
-            raw_box = predictions[cell_offset + cell_index, :4]
-            class_scores = predictions[cell_offset + cell_index, 4:]
+            anchor_index = cell_offset + cell_index
+            raw_box = predictions[anchor_index, :4]
+            class_scores = predictions[anchor_index, 4:]
             class_index = int(np.argmax(class_scores))
-            class_probability = float(np.exp(class_scores[class_index]) / np.sum(np.exp(class_scores)))
-            if class_probability < confidence_threshold:
+            confidence = float(sigmoid(class_scores[class_index]))
+            if confidence < confidence_threshold:
                 continue
 
-            row, column = divmod(cell_index, grid_size)
-            scale_x, scale_y = anchor
-            center_x = (column + 0.5) * width / grid_size
-            center_y = (row + 0.5) * height / grid_size
-            box_width = scale_x * (2.0 * width / 640) * np.exp(float(raw_box[0]))
-            box_height = scale_y * (2.0 * height / 640) * np.exp(float(raw_box[1]))
+            center_x, center_y, box_width, box_height = map(float, raw_box)
             left = max(0, int(center_x - box_width / 2))
             top = max(0, int(center_y - box_height / 2))
             right = min(width, int(center_x + box_width / 2))
             bottom = min(height, int(center_y + box_height / 2))
-            boxes.append((left, top, right, bottom, class_probability, CLASS_NAMES[class_index]))
+            boxes.append((left, top, right, bottom, confidence, CLASS_NAMES[class_index]))
         cell_offset += cell_count
 
     return non_max_suppression(boxes, 0.45)
@@ -152,7 +148,7 @@ def main() -> None:
         options=DEFAULT_CLASSES,
         default=DEFAULT_CLASSES,
     )
-    confidence = st.sidebar.slider("Confidence", min_value=0.20, max_value=0.95, value=0.50)
+    confidence = st.sidebar.slider("Confidence", min_value=0.20, max_value=0.95, value=0.55)
 
     with st.spinner("Detecting objects..."):
         boxes = detect_image(image_array, model, confidence)
